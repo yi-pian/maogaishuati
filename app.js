@@ -6,6 +6,10 @@ const multiples = questions.filter((question) => question.type === "multiple");
 const storage = {
   mistakes: "maogaiQuiz.mistakes",
   practiceIndex: "maogaiQuiz.practiceIndex",
+  removedMistakes: "maogaiQuiz.removedMistakes",
+  resetAt: "maogaiQuiz.resetAt",
+  sync: "maogaiQuiz.sync",
+  updatedAt: "maogaiQuiz.updatedAt",
 };
 
 const state = {
@@ -25,6 +29,10 @@ const state = {
   },
   exam: null,
   mistakes: loadMistakes(),
+  removedMistakes: loadJson(storage.removedMistakes, {}),
+  resetAt: localStorage.getItem(storage.resetAt) || "",
+  updatedAt: loadUpdatedAt(),
+  sync: loadSyncConfig(),
   toastTimer: null,
 };
 
@@ -39,7 +47,11 @@ function init() {
     button.addEventListener("click", () => setMode(button.dataset.mode));
   });
   document.body.addEventListener("click", handlePageClick);
+  document.body.addEventListener("change", handlePageChange);
   render();
+  if (state.sync.code && state.sync.auto) {
+    window.setTimeout(() => syncNow({ silent: true }), 800);
+  }
 }
 
 function handlePageClick(event) {
@@ -75,6 +87,17 @@ function handlePageClick(event) {
   if (action === "show-mistakes") setMode("mistakes");
   if (action === "remove-mistake") removeMistake(actionButton.dataset.id);
   if (action === "reset-all") resetAllRecords();
+  if (action === "sync-create") createSyncSpace();
+  if (action === "sync-connect") connectSyncSpace();
+  if (action === "sync-now") syncNow();
+}
+
+function handlePageChange(event) {
+  const autoToggle = event.target.closest("[data-sync-auto]");
+  if (!autoToggle) return;
+  state.sync.auto = autoToggle.checked;
+  saveSyncConfig();
+  render();
 }
 
 function setMode(mode) {
@@ -117,7 +140,7 @@ function renderPractice() {
   mainPanel.insertAdjacentHTML(
     "beforeend",
     `<div class="actions">
-      <div class="action-group">
+      <div class="action-group pager-group">
         <button class="pager-button" type="button" data-action="practice-prev" ${index === 0 ? "disabled" : ""}>${icon("left")}上一题</button>
         <button class="pager-button" type="button" data-action="practice-next" ${index === questions.length - 1 ? "disabled" : ""}>下一题${icon("right")}</button>
       </div>
@@ -246,7 +269,7 @@ function renderExam() {
   mainPanel.insertAdjacentHTML(
     "beforeend",
     `<div class="actions">
-      <div class="action-group">
+      <div class="action-group pager-group">
         <button class="pager-button" type="button" data-action="exam-prev" ${index === 0 ? "disabled" : ""}>${icon("left")}上一题</button>
         <button class="pager-button" type="button" data-action="exam-next" ${index === state.exam.questions.length - 1 ? "disabled" : ""}>下一题${icon("right")}</button>
       </div>
@@ -447,6 +470,20 @@ function renderResetCard() {
     <section class="side-card">
       <h2 class="side-title">记录</h2>
       <button class="action-button danger full-width" type="button" data-action="reset-all">${icon("trash")}清空记录</button>
+    </section>
+    <section class="side-card">
+      <h2 class="side-title">云同步 <span class="status-pill">${state.sync.status || (state.sync.code ? "已连接" : "未连接")}</span></h2>
+      <input class="sync-input" id="syncCodeInput" type="text" value="${escapeHtml(state.sync.code)}" placeholder="同步码">
+      <div class="sync-actions">
+        <button class="action-button" type="button" data-action="sync-create">${icon("cloud")}创建</button>
+        <button class="action-button" type="button" data-action="sync-connect">${icon("link")}连接</button>
+        <button class="action-button primary" type="button" data-action="sync-now">${icon("refresh")}同步</button>
+      </div>
+      <label class="sync-toggle">
+        <input type="checkbox" data-sync-auto ${state.sync.auto ? "checked" : ""}>
+        <span>自动同步</span>
+      </label>
+      <p class="sync-hint">手机和电脑填同一个同步码即可共享顺序进度和错题集。</p>
     </section>`;
 }
 
@@ -561,6 +598,7 @@ function pickRandomQuestion(excludeId) {
 function movePractice(delta) {
   state.practice.index = clamp(state.practice.index + delta, 0, questions.length - 1);
   localStorage.setItem(storage.practiceIndex, String(state.practice.index));
+  markChanged();
   renderPractice();
 }
 
@@ -614,10 +652,14 @@ function recordWrong(question, selected) {
   current.lastAnswer = [...selected].sort();
   current.lastWrongAt = new Date().toISOString();
   state.mistakes[question.id] = current;
+  delete state.removedMistakes[question.id];
+  localStorage.setItem(storage.removedMistakes, JSON.stringify(state.removedMistakes));
 }
 
 function removeMistake(id) {
   delete state.mistakes[id];
+  state.removedMistakes[id] = new Date().toISOString();
+  localStorage.setItem(storage.removedMistakes, JSON.stringify(state.removedMistakes));
   saveMistakes();
   showToast("已移出错题集");
   renderMistakes();
@@ -638,8 +680,15 @@ function resetAllRecords() {
   };
   state.exam = null;
   state.mistakes = {};
+  state.removedMistakes = {};
+  state.resetAt = new Date().toISOString();
+  state.updatedAt = state.resetAt;
   localStorage.removeItem(storage.practiceIndex);
   localStorage.removeItem(storage.mistakes);
+  localStorage.removeItem(storage.removedMistakes);
+  localStorage.setItem(storage.resetAt, state.resetAt);
+  localStorage.setItem(storage.updatedAt, state.updatedAt);
+  scheduleAutoSync();
   showToast("已清空记录");
   render();
 }
@@ -655,7 +704,269 @@ function loadMistakes() {
 
 function saveMistakes() {
   localStorage.setItem(storage.mistakes, JSON.stringify(state.mistakes));
+  markChanged();
   updateBankStats();
+}
+
+function loadJson(key, fallback) {
+  try {
+    const parsed = JSON.parse(localStorage.getItem(key) || "");
+    return parsed && typeof parsed === "object" ? parsed : fallback;
+  } catch {
+    return fallback;
+  }
+}
+
+function loadUpdatedAt() {
+  const saved = localStorage.getItem(storage.updatedAt);
+  if (saved) return saved;
+  const hasProgress = Number(localStorage.getItem(storage.practiceIndex) || 0) > 0;
+  const hasMistakes = Object.keys(loadMistakes()).length > 0;
+  return hasProgress || hasMistakes ? new Date().toISOString() : "";
+}
+
+function loadSyncConfig() {
+  const saved = loadJson(storage.sync, {});
+  return {
+    code: typeof saved.code === "string" ? saved.code : "",
+    auto: saved.auto !== false,
+    status: "",
+    busy: false,
+    timer: null,
+  };
+}
+
+function saveSyncConfig() {
+  localStorage.setItem(storage.sync, JSON.stringify({ code: state.sync.code, auto: state.sync.auto }));
+}
+
+function markChanged() {
+  state.updatedAt = new Date().toISOString();
+  localStorage.setItem(storage.updatedAt, state.updatedAt);
+  scheduleAutoSync();
+}
+
+function scheduleAutoSync() {
+  if (!state.sync.code || !state.sync.auto || state.sync.busy) return;
+  window.clearTimeout(state.sync.timer);
+  state.sync.timer = window.setTimeout(() => syncNow({ silent: true }), 900);
+}
+
+async function createSyncSpace() {
+  if (state.sync.busy) return;
+  const inputCode = readSyncInput();
+  if (inputCode && !window.confirm("当前已填写同步码，要改为创建新的同步空间吗？")) return;
+  await withSyncStatus("创建中", async () => {
+    const response = await fetch("https://jsonblob.com/api/jsonBlob", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify(buildSyncSnapshot()),
+    });
+    if (!response.ok) throw new Error("创建同步空间失败");
+    const location = response.headers.get("Location") || response.headers.get("location");
+    const code = normalizeSyncCode(location);
+    if (!code) throw new Error("没有拿到同步码");
+    state.sync.code = code;
+    state.sync.auto = true;
+    saveSyncConfig();
+    showToast("同步码已创建");
+  });
+}
+
+async function connectSyncSpace() {
+  const code = readSyncInput();
+  if (!code) {
+    showToast("先输入同步码");
+    return;
+  }
+  state.sync.code = code;
+  saveSyncConfig();
+  await syncNow();
+}
+
+async function syncNow(options = {}) {
+  if (state.sync.busy) return;
+  const code = readSyncInput() || state.sync.code;
+  if (!code) {
+    if (!options.silent) showToast("先创建或输入同步码");
+    return;
+  }
+  state.sync.code = code;
+  saveSyncConfig();
+
+  await withSyncStatus("同步中", async () => {
+    const remote = await fetchSyncSnapshot(code);
+    const merged = mergeSyncSnapshots(buildSyncSnapshot(), remote);
+    applySyncSnapshot(merged);
+    await saveSyncSnapshot(code, buildSyncSnapshot());
+    if (!options.silent) showToast("同步完成");
+  }, options);
+}
+
+async function withSyncStatus(status, task, options = {}) {
+  state.sync.busy = true;
+  state.sync.status = status;
+  render();
+  try {
+    await task();
+    state.sync.status = state.sync.code ? "已同步" : "未连接";
+  } catch (error) {
+    state.sync.status = "同步失败";
+    if (!options.silent) showToast(error.message || "同步失败");
+  } finally {
+    state.sync.busy = false;
+    render();
+  }
+}
+
+async function fetchSyncSnapshot(code) {
+  const response = await fetch(syncUrl(code), { cache: "no-store" });
+  if (!response.ok) throw new Error("读取云端记录失败");
+  const data = await response.json();
+  return sanitizeSyncSnapshot(data);
+}
+
+async function saveSyncSnapshot(code, snapshot) {
+  const response = await fetch(syncUrl(code), {
+    method: "PUT",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify(snapshot),
+  });
+  if (!response.ok) throw new Error("保存云端记录失败");
+}
+
+function readSyncInput() {
+  const input = document.getElementById("syncCodeInput");
+  return normalizeSyncCode(input?.value || "");
+}
+
+function syncUrl(code) {
+  return `https://jsonblob.com/api/jsonBlob/${encodeURIComponent(normalizeSyncCode(code))}`;
+}
+
+function normalizeSyncCode(value) {
+  const text = String(value || "").trim();
+  if (!text) return "";
+  const match = text.match(/jsonBlob\/([^/?#]+)/i);
+  return match ? match[1] : text;
+}
+
+function buildSyncSnapshot() {
+  return sanitizeSyncSnapshot({
+    app: "maogaiQuiz",
+    version: 1,
+    practiceIndex: state.practice.index,
+    mistakes: state.mistakes,
+    removedMistakes: state.removedMistakes,
+    resetAt: state.resetAt,
+    updatedAt: state.updatedAt,
+  });
+}
+
+function sanitizeSyncSnapshot(snapshot) {
+  const rawMistakes = snapshot && typeof snapshot.mistakes === "object" ? snapshot.mistakes : {};
+  const mistakes = {};
+  Object.entries(rawMistakes).forEach(([id, record]) => {
+    if (!questionById.has(id) || !record || typeof record !== "object") return;
+    mistakes[id] = {
+      count: Math.max(0, Number(record.count || 0)),
+      lastAnswer: Array.isArray(record.lastAnswer) ? record.lastAnswer.filter(Boolean).map(String) : [],
+      lastWrongAt: typeof record.lastWrongAt === "string" ? record.lastWrongAt : "",
+    };
+  });
+
+  const rawRemoved = snapshot && typeof snapshot.removedMistakes === "object" ? snapshot.removedMistakes : {};
+  const removedMistakes = {};
+  Object.entries(rawRemoved).forEach(([id, time]) => {
+    if (questionById.has(id) && typeof time === "string") removedMistakes[id] = time;
+  });
+
+  return {
+    app: "maogaiQuiz",
+    version: 1,
+    practiceIndex: clamp(Number(snapshot?.practiceIndex || 0), 0, Math.max(questions.length - 1, 0)),
+    mistakes,
+    removedMistakes,
+    resetAt: typeof snapshot?.resetAt === "string" ? snapshot.resetAt : "",
+    updatedAt: typeof snapshot?.updatedAt === "string" ? snapshot.updatedAt : "",
+  };
+}
+
+function mergeSyncSnapshots(local, remote) {
+  const localEffective = remote.resetAt && timestamp(remote.resetAt) > timestamp(local.updatedAt)
+    ? blankSyncSnapshot(remote.resetAt)
+    : local;
+  const remoteEffective = local.resetAt && timestamp(local.resetAt) > timestamp(remote.updatedAt)
+    ? blankSyncSnapshot(local.resetAt)
+    : remote;
+
+  const removedMistakes = mergeRemovedMistakes(localEffective.removedMistakes, remoteEffective.removedMistakes);
+  const mistakes = {};
+  const ids = new Set([...Object.keys(localEffective.mistakes), ...Object.keys(remoteEffective.mistakes)]);
+  ids.forEach((id) => {
+    const removalTime = timestamp(removedMistakes[id]);
+    const records = [localEffective.mistakes[id], remoteEffective.mistakes[id]]
+      .filter((record) => record && timestamp(record.lastWrongAt) > removalTime);
+    if (!records.length) return;
+    mistakes[id] = mergeMistakeRecords(records);
+  });
+
+  const resetAt = latestTime(local.resetAt, remote.resetAt);
+  const updatedAt = latestTime(local.updatedAt, remote.updatedAt, resetAt);
+  return sanitizeSyncSnapshot({
+    practiceIndex: Math.max(localEffective.practiceIndex, remoteEffective.practiceIndex),
+    mistakes,
+    removedMistakes,
+    resetAt,
+    updatedAt,
+  });
+}
+
+function blankSyncSnapshot(time) {
+  return sanitizeSyncSnapshot({ practiceIndex: 0, mistakes: {}, removedMistakes: {}, resetAt: time, updatedAt: time });
+}
+
+function mergeRemovedMistakes(left = {}, right = {}) {
+  const merged = {};
+  new Set([...Object.keys(left), ...Object.keys(right)]).forEach((id) => {
+    merged[id] = latestTime(left[id], right[id]);
+  });
+  return merged;
+}
+
+function mergeMistakeRecords(records) {
+  return records.reduce((merged, record) => {
+    if (!merged) return { ...record, lastAnswer: [...record.lastAnswer] };
+    const newer = timestamp(record.lastWrongAt) >= timestamp(merged.lastWrongAt) ? record : merged;
+    return {
+      count: Math.max(Number(merged.count || 0), Number(record.count || 0)),
+      lastAnswer: [...newer.lastAnswer],
+      lastWrongAt: newer.lastWrongAt,
+    };
+  }, null);
+}
+
+function applySyncSnapshot(snapshot) {
+  state.practice.index = snapshot.practiceIndex;
+  state.mistakes = snapshot.mistakes;
+  state.removedMistakes = snapshot.removedMistakes;
+  state.resetAt = snapshot.resetAt;
+  state.updatedAt = snapshot.updatedAt || new Date().toISOString();
+  localStorage.setItem(storage.practiceIndex, String(state.practice.index));
+  localStorage.setItem(storage.mistakes, JSON.stringify(state.mistakes));
+  localStorage.setItem(storage.removedMistakes, JSON.stringify(state.removedMistakes));
+  localStorage.setItem(storage.resetAt, state.resetAt);
+  localStorage.setItem(storage.updatedAt, state.updatedAt);
+  updateBankStats();
+}
+
+function timestamp(value) {
+  const time = Date.parse(value || "");
+  return Number.isNaN(time) ? 0 : time;
+}
+
+function latestTime(...values) {
+  return values.filter(Boolean).sort((a, b) => timestamp(b) - timestamp(a))[0] || "";
 }
 
 function updateBankStats() {
@@ -732,6 +1043,9 @@ function icon(name) {
     right: '<path d="m9 18 6-6-6-6"></path>',
     play: '<path d="M8 5v14l11-7-11-7Z"></path>',
     rotate: '<path d="M4 4v6h6"></path><path d="M20 12a8 8 0 0 1-13.7 5.7L4 15.5"></path><path d="M4 10a8 8 0 0 1 13.7-5.7L20 6.5"></path>',
+    refresh: '<path d="M4 4v6h6"></path><path d="M20 20v-6h-6"></path><path d="M20 9a8 8 0 0 0-13.5-3L4 8"></path><path d="M4 15a8 8 0 0 0 13.5 3l2.5-2"></path>',
+    cloud: '<path d="M17.5 18H8a5 5 0 1 1 1.1-9.9A6 6 0 0 1 20 11.5 3.5 3.5 0 0 1 17.5 18Z"></path>',
+    link: '<path d="M10 13a5 5 0 0 0 7.1 0l2-2a5 5 0 0 0-7.1-7.1l-1.1 1.1"></path><path d="M14 11a5 5 0 0 0-7.1 0l-2 2A5 5 0 0 0 12 20.1l1.1-1.1"></path>',
     alert: '<path d="M12 3 3.8 20h16.4L12 3Z"></path><path d="M12 9v5M12 17h.01"></path>',
     trash: '<path d="M4 7h16"></path><path d="M10 11v6M14 11v6"></path><path d="m6 7 1 14h10l1-14"></path><path d="M9 7V4h6v3"></path>',
   };

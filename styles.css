@@ -315,6 +315,12 @@ button {
   gap: 10px;
 }
 
+.pager-group {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  width: min(260px, 100%);
+}
+
 .action-button,
 .pager-button,
 .icon-button {
@@ -352,6 +358,44 @@ button {
 
 .action-button.full-width {
   width: 100%;
+}
+
+.sync-input {
+  width: 100%;
+  min-height: 40px;
+  border: 1px solid var(--line);
+  border-radius: 8px;
+  padding: 8px 10px;
+  background: #fff;
+  color: var(--ink);
+}
+
+.sync-actions {
+  display: grid;
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+  gap: 8px;
+  margin-top: 10px;
+}
+
+.sync-actions .action-button {
+  min-width: 0;
+  padding-inline: 8px;
+}
+
+.sync-toggle {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  margin-top: 10px;
+  color: var(--muted);
+  font-size: 14px;
+}
+
+.sync-hint {
+  margin: 10px 0 0;
+  color: var(--muted);
+  font-size: 13px;
+  line-height: 1.6;
 }
 
 .side-card {
@@ -589,6 +633,11 @@ button {
     width: 100%;
   }
 
+  .pager-group {
+    width: 100%;
+    gap: 8px;
+  }
+
   .actions > .status-pill {
     align-self: flex-start;
   }
@@ -597,11 +646,15 @@ button {
     width: 100%;
   }
 
+  .sync-actions {
+    grid-template-columns: repeat(3, minmax(0, 1fr));
+  }
+
   .pager-button {
-    flex: 1 1 0;
     min-width: 0;
-    min-height: 38px;
-    padding: 8px 10px;
+    min-height: 34px;
+    padding: 6px 8px;
+    font-size: 14px;
     white-space: nowrap;
   }
 
