@@ -12,6 +12,10 @@ const storage = {
   updatedAt: "maogaiQuiz.updatedAt",
 };
 
+const SUPABASE_URL = "https://gcivlrsaxpkrebbvtnhf.supabase.co";
+const SUPABASE_ANON_KEY = "sb_publishable_RDeixajA64WvHvgH1PoITw_s8_DSH07";
+const SUPABASE_TABLE = "quiz_sync";
+
 const state = {
   mode: "practice",
   practice: {
@@ -757,18 +761,12 @@ async function createSyncSpace() {
   const inputCode = readSyncInput();
   if (inputCode && !window.confirm("当前已填写同步码，要改为创建新的同步空间吗？")) return;
   await withSyncStatus("创建中", async () => {
-    const response = await fetch("https://jsonblob.com/api/jsonBlob", {
-      method: "POST",
-      headers: { "Content-Type": "application/json" },
-      body: JSON.stringify(buildSyncSnapshot()),
-    });
-    if (!response.ok) throw new Error("创建同步空间失败");
-    const location = response.headers.get("Location") || response.headers.get("location");
-    const code = normalizeSyncCode(location);
-    if (!code) throw new Error("没有拿到同步码");
+    ensureSupabaseConfigured();
+    const code = createSyncCode();
     state.sync.code = code;
     state.sync.auto = true;
     saveSyncConfig();
+    await saveSyncSnapshot(code, buildSyncSnapshot());
     showToast("同步码已创建");
   });
 }
@@ -820,19 +818,26 @@ async function withSyncStatus(status, task, options = {}) {
 }
 
 async function fetchSyncSnapshot(code) {
-  const response = await fetch(syncUrl(code), { cache: "no-store" });
-  if (!response.ok) throw new Error("读取云端记录失败");
-  const data = await response.json();
-  return sanitizeSyncSnapshot(data);
+  ensureSupabaseConfigured();
+  const rows = await supabaseRequest(
+    `${SUPABASE_TABLE}?id=eq.${encodeURIComponent(normalizeSyncCode(code))}&select=data`,
+    { method: "GET" }
+  );
+  if (!Array.isArray(rows) || rows.length === 0) throw new Error("同步码不存在");
+  return sanitizeSyncSnapshot(rows[0].data || {});
 }
 
 async function saveSyncSnapshot(code, snapshot) {
-  const response = await fetch(syncUrl(code), {
-    method: "PUT",
-    headers: { "Content-Type": "application/json" },
-    body: JSON.stringify(snapshot),
+  ensureSupabaseConfigured();
+  await supabaseRequest(`${SUPABASE_TABLE}?on_conflict=id`, {
+    method: "POST",
+    headers: { Prefer: "resolution=merge-duplicates,return=minimal" },
+    body: JSON.stringify({
+      id: normalizeSyncCode(code),
+      data: snapshot,
+      updated_at: new Date().toISOString(),
+    }),
   });
-  if (!response.ok) throw new Error("保存云端记录失败");
 }
 
 function readSyncInput() {
@@ -840,15 +845,46 @@ function readSyncInput() {
   return normalizeSyncCode(input?.value || "");
 }
 
-function syncUrl(code) {
-  return `https://jsonblob.com/api/jsonBlob/${encodeURIComponent(normalizeSyncCode(code))}`;
+function createSyncCode() {
+  const bytes = new Uint8Array(12);
+  window.crypto.getRandomValues(bytes);
+  return Array.from(bytes, (byte) => byte.toString(36).padStart(2, "0")).join("").slice(0, 18);
 }
 
 function normalizeSyncCode(value) {
   const text = String(value || "").trim();
   if (!text) return "";
-  const match = text.match(/jsonBlob\/([^/?#]+)/i);
-  return match ? match[1] : text;
+  return text.replace(/\s+/g, "");
+}
+
+function ensureSupabaseConfigured() {
+  if (!SUPABASE_URL || !SUPABASE_ANON_KEY) throw new Error("缺少 Supabase 配置");
+}
+
+async function supabaseRequest(path, options = {}) {
+  const headers = {
+    apikey: SUPABASE_ANON_KEY,
+    Authorization: `Bearer ${SUPABASE_ANON_KEY}`,
+    "Content-Type": "application/json",
+    ...(options.headers || {}),
+  };
+  const response = await fetch(`${SUPABASE_URL}/rest/v1/${path}`, {
+    ...options,
+    headers,
+  });
+  if (!response.ok) {
+    const detail = await response.text().catch(() => "");
+    if (/relation .* does not exist|Could not find the table/i.test(detail)) {
+      throw new Error("Supabase 还没建 quiz_sync 表");
+    }
+    if (response.status === 401 || response.status === 403) {
+      throw new Error("Supabase 权限未开放");
+    }
+    throw new Error(detail || "Supabase 同步失败");
+  }
+  if (response.status === 204) return null;
+  const text = await response.text();
+  return text ? JSON.parse(text) : null;
 }
 
 function buildSyncSnapshot() {
