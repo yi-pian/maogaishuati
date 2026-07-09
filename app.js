@@ -487,7 +487,7 @@ function renderResetCard() {
         <input type="checkbox" data-sync-auto ${state.sync.auto ? "checked" : ""}>
         <span>自动同步</span>
       </label>
-      <p class="sync-hint">手机和电脑填同一个同步码即可共享顺序进度和错题集。</p>
+      <p class="sync-hint ${state.sync.error ? "sync-error" : ""}">${escapeHtml(state.sync.error || "手机和电脑填同一个同步码即可共享顺序进度和错题集。")}</p>
     </section>`;
 }
 
@@ -735,6 +735,7 @@ function loadSyncConfig() {
     code: typeof saved.code === "string" ? saved.code : "",
     auto: saved.auto !== false,
     status: "",
+    error: "",
     busy: false,
     timer: null,
   };
@@ -760,6 +761,7 @@ async function createSyncSpace() {
   if (state.sync.busy) return;
   const inputCode = readSyncInput();
   if (inputCode && !window.confirm("当前已填写同步码，要改为创建新的同步空间吗？")) return;
+  state.sync.error = "";
   await withSyncStatus("创建中", async () => {
     ensureSupabaseConfigured();
     const code = createSyncCode();
@@ -777,6 +779,7 @@ async function connectSyncSpace() {
     showToast("先输入同步码");
     return;
   }
+  state.sync.error = "";
   state.sync.code = code;
   saveSyncConfig();
   await syncNow();
@@ -789,6 +792,7 @@ async function syncNow(options = {}) {
     if (!options.silent) showToast("先创建或输入同步码");
     return;
   }
+  state.sync.error = "";
   state.sync.code = code;
   saveSyncConfig();
 
@@ -808,9 +812,12 @@ async function withSyncStatus(status, task, options = {}) {
   try {
     await task();
     state.sync.status = state.sync.code ? "已同步" : "未连接";
+    state.sync.error = "";
   } catch (error) {
+    const message = error.message || "同步失败";
     state.sync.status = "同步失败";
-    if (!options.silent) showToast(error.message || "同步失败");
+    state.sync.error = message;
+    if (!options.silent) showToast(message);
   } finally {
     state.sync.busy = false;
     render();

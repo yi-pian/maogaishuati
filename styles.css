@@ -398,6 +398,10 @@ button {
   line-height: 1.6;
 }
 
+.sync-error {
+  color: var(--red);
+}
+
 .side-card {
   border: 1px solid var(--line);
   border-radius: 8px;
