@@ -585,9 +585,27 @@ button {
     grid-template-columns: repeat(5, minmax(0, 1fr));
   }
 
-  .action-group,
-  .action-button,
-  .pager-button {
+  .action-group {
     width: 100%;
+  }
+
+  .actions > .status-pill {
+    align-self: flex-start;
+  }
+
+  .action-button {
+    width: 100%;
+  }
+
+  .pager-button {
+    flex: 1 1 0;
+    min-width: 0;
+    min-height: 38px;
+    padding: 8px 10px;
+    white-space: nowrap;
+  }
+
+  .action-group .pager-button + .pager-button {
+    margin-left: 0;
   }
 }
